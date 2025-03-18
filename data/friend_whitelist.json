@@ -1,0 +1,12 @@
+{
+    "friend_whitelist": [
+        {
+            "username"  : "",
+            "steamid"   : ""
+        },
+        {
+            "username"  : "",
+            "steamid"   : ""
+        }
+    ]
+  }
