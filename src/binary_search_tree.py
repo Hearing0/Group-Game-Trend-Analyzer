@@ -10,17 +10,17 @@ def insert(root, key, game):
         return GameTreeNode(key, game)
     
     if key < root.val:
-        root.left = insert(root.left, key)
+        root.left = insert(root.left, key, game)
     else:
-        root.right = insert(root.right, key)
+        root.right = insert(root.right, key, game)
     
     return root
 
 def inorder_traversal(root, res):
     if root:
-        inorder_traversal(root.left, res)
-        res.append(root.val)
-        inorder_traversal(root.right, res)
+        if root.left: inorder_traversal(root.left, res)
+        res.append(root.game)
+        if root.right: inorder_traversal(root.right, res)
 
 def tree_sort(arr):
     if not arr:
@@ -28,8 +28,11 @@ def tree_sort(arr):
     
     root = None
     for e in arr:
-        root = insert(root, e['score'], e['game'])
+        root = insert(root, e['score'], e)
+    
+    print("Tree sorted!")
     
     sorted_arr = []
     inorder_traversal(root, sorted_arr)
+    print("BST sorted!")
     return sorted_arr
