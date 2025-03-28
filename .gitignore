@@ -6,3 +6,5 @@ user_data/
 
 *.csv
 data/
+
+*.json

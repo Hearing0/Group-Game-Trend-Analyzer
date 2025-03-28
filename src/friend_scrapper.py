@@ -145,7 +145,9 @@ friends_response = requests.get(
     f"https://api.steampowered.com/ISteamUser/GetFriendList/v1/"
     f"?key={STEAM_API_KEY}&steamid={initial_steam_id}&relationship=friend"
 ).json()
+steamids = []
 steamids = [friend["steamid"] for friend in friends_response["friendslist"]["friends"]]
+steamids.append(initial_steam_id)
 
 
 # Batch-query GetPlayerSummaries
@@ -165,4 +167,4 @@ with open("data/raw_friend_ids.json", "w") as f:
     json.dump({"friends": all_friends}, f, indent=2)
 
 # Notify success
-
+print(f"Successfully fetched {len(all_friends)} friends (including self).")
