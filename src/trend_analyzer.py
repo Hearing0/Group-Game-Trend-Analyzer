@@ -1,6 +1,6 @@
 import json
+from types import NoneType
 import requests
-import game_data_scrapper as game_util
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 import statistics as stats
@@ -79,7 +79,7 @@ def fetch_game_name(appid):
         if str(appid) in data and data[str(appid)]["success"]:
             return data[str(appid)]["data"]["name"]
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching game name for appid {appid}: {e}")
+        # print(f"Error fetching game name for appid {appid}: {e}")
         return e
     return None  
 
@@ -92,7 +92,7 @@ def fetch_full_game_data(appid):
         if str(appid) in data and data[str(appid)]["success"]:
             return data[str(appid)]["data"]
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching game data for appid {appid}: {e}")
+        # print(f"Error fetching game data for appid {appid}: {e}")
         return e
     return None
 
@@ -108,36 +108,43 @@ def process_group_stats(game_stats, game_data):
     # Average hours b/w users
     group_stats['avg_recent_hrs'] = game_stats['group_stats']['total_recent_hrs']  / game_stats['group_stats']['num_interested_friends']
     group_stats['avg_total_hrs']  = game_stats['group_stats']['total_forever_hrs'] / game_stats['group_stats']['num_interested_friends']
-    # TODO: Add avg num of similar games (in user library) 
+    
+    # Create list of users' recent hr
+    users_recent_hrs    = []
+    users_total_hrs     = []
+    for userdata in game_stats['users']:
+        users_recent_hrs.append(userdata['playtime_2weeks'])
+        users_total_hrs.append(userdata['playtime_forever'])
     
     # Stdev b/w users
-    if len(total_recent_hrs_data) >= 2:
-        group_stats['stdev_recent_hrs'] = stats.stdev(total_recent_hrs_data)
-    else: group_stats['stdev_recent_hrs']   = 0
-    if len(total_forever_hrs_data) >= 2:
-        group_stats['stdev_forever_hrs']= stats.stdev(total_forever_hrs_data)
-    else: group_stats['stdev_forever_hrs']  = 0
+    if game_stats['group_stats']['num_interested_friends'] >= 2:
+        group_stats['stdev_recent_hrs'] = stats.stdev(users_recent_hrs)
+        group_stats['stdev_forever_hrs']= stats.stdev(users_total_hrs)
+    else: 
+        group_stats['stdev_recent_hrs']   = 0
+        group_stats['stdev_forever_hrs']  = 0
+    
+    # Compute inverted stdev weights
+    if group_stats['stdev_recent_hrs'] != 0 or group_stats['stdev_recent_hrs'] < 2:
+        group_stats['inv_stdev_recent_hrs'] = 1 / group_stats['stdev_recent_hrs']
+    else: group_stats['inv_stdev_recent_hrs'] = 0
+    if group_stats['stdev_forever_hrs'] != 0 or group_stats['stdev_forever_hrs'] < 2:
+        group_stats['inv_stdev_forever_hrs'] = 1 / group_stats['stdev_forever_hrs']
+    else: group_stats['inv_stdev_forever_hrs'] = 0
+    
     
     # Weighted avg ( (.2 + .5 + .3) / num of analysis categories)
     avg_recent_hr_weight            = .15
-    stdev_recent_hr_weight          = .30
     avg_total_hr_weight             = .10
+    stdev_recent_hr_weight          = .30
     stdev_forever_hr_weight         = .25
     num_interested_friends_weight   = .20
-    
-    # Compute inverted stdev weights
-    if group_stats['stdev_recent_hrs'] != 0:
-        group_stats['inv_stdev_recent_hrs'] = 1 / group_stats['stdev_recent_hrs']
-    else: stdev_recent_hrs = 0
-    if group_stats['stdev_forever_hrs'] != 0:
-        group_stats['inv_stdev_forever_hrs'] = 1 / group_stats['stdev_forever_hrs']
-    else: stdev_forever_hrs = 0
 
     wt_interest_score = (
             group_stats['avg_recent_hrs']           * avg_recent_hr_weight + 
             group_stats['avg_total_hrs']            * avg_total_hr_weight + 
-            group_stats['stdev_forever_hrs']        * stdev_forever_hr_weight + 
-            group_stats['stdev_recent_hrs']         * stdev_recent_hr_weight +
+            group_stats['inv_stdev_recent_hrs']     * stdev_recent_hr_weight +
+            group_stats['inv_stdev_forever_hrs']    * stdev_forever_hr_weight +
             group_stats['num_interested_friends']   * num_interested_friends_weight  
         ) / 4
     game_rank_stats = {
@@ -150,30 +157,64 @@ def process_group_stats(game_stats, game_data):
     return game_rank_stats
 
 # Workers process all games in the group library
-def worker(id, app_remaining_q, results, total_games):    
-    while len(app_remaining_q) > 0:
-        if total_games-len(app_remaining_q) % 10 == 0: 
-            print_log(f"Worker {id} Progress: {total_games-len(app_remaining_q)}/{total_games} games")
+def worker(id: int, app_remaining_q: list, results: list, defunct_game_lib: list, total_games: int):
+    global delays_cnt
+    delays_cnt = 0
         
-        game = app_remaining_q.pop()     
+    while len(app_remaining_q) > 0:
+        # Print current progress
+        if len(app_remaining_q) % 50 == 0: 
+            print_log(f"Worker {id} Progress: {total_games - len(app_remaining_q)}/{total_games} games")
+        
+        game = app_remaining_q.pop()
         try: 
+            
+            # if less than 2 friends interested, skip
+            if game['group_stats']['num_interested_friends'] <= 2:
+                defunct_game_lib.append(game)
+                continue
+            
+            
             appid = game['appid']
             appdetails_req = fetch_full_game_data(appid)
             
             # if successful, process the game data and put it to the results queue
             if isinstance(appdetails_req, dict):
-                results.append(process_group_stats(game, appdetails_req))
-                q.task_done()
-
-            elif appdetails_req.response.status_code == 429:
-                print_log(f'Too many requests. Put App ID {appid} back to deque. Sleep for 10 sec')
-                app_remaining_q.append(game)
-                time.sleep(10)
+                delays_cnt = 0
+                processed_game = process_group_stats(game, appdetails_req)
+                if processed_game != None:
+                    results.append(processed_game)
+                else: 
+                    print_log(f"Game ID {appid} < 2 friends interested. Attempting later...")
+                    continue
+            
+            # If game not found, put it back to the queue and sleep for 5 sec
+            elif isinstance(appdetails_req, NoneType):
+                print_log(f"Game ID {appid} not found. Attempting later. Sleep for 5 sec...")
+                if delays_cnt < 3:
+                    delays_cnt += 1
+                    time.sleep(5)
+                else:
+                    print_log(f"Game ID {appid} not found. Too many requests. Sleep for 1 min...")
+                    delays_cnt += 1
+                    time.sleep(1 * 60)
+                defunct_game_lib.append(game)
                 continue
 
+            elif appdetails_req.response.status_code == 429:
+                app_remaining_q.append(game)
+                if delays_cnt < 3:
+                    print_log(f'Too many requests. Put App ID {appid} back to deque. Sleep for 30 sec...')
+                    delays_cnt += 1
+                    time.sleep(30)
+                else:
+                    print_log(f'Too many requests. Put App ID {appid} back to deque. Sleep for 5 min...')
+                    delays_cnt += 1
+                    time.sleep(5 * 60)
+                continue
 
             elif appdetails_req.response.status_code == 403:
-                print_log(f'Forbidden to access. Put App ID {appid} back to deque. Sleep for 5 min.')
+                print_log(f'Forbidden to access. Put App ID {appid} back to deque. Sleep for 5 min...')
                 app_remaining_q.append(game)
                 time.sleep(5 * 60)
                 continue
@@ -186,6 +227,10 @@ def worker(id, app_remaining_q, results, total_games):
         except:
             print_log(f"Error in decoding app details request. App id: {appid}")
             traceback.print_exc(limit=5)
+            defunct_game_lib.append(game)
+            continue
+
+    print(f"worker {id} exiting")
 
 
 
@@ -196,12 +241,6 @@ game_stats_by_user = []
 group_library = []
 group_users = []
 raw_wt_interest = []
-
-jobs = queue.Queue()
-processed_game_lib = queue.Queue()
-thread_num = 10
-workers = []
-
 
     
 # Retrieve all user game data
@@ -264,7 +303,7 @@ try:
                 'playtime_forever'  : game['playtime_forever'] / hr_in_mins,
                 'playtime_2weeks'   : game['playtime_2weeks'] / hr_in_mins if game.get('playtime_2weeks') != None else 0,
             })
-        
+            
         # Record processed users 
         group_users.append({
             'personaname'   : user_name,
@@ -310,29 +349,50 @@ for idx, game_stats in enumerate(group_library):
         game_stats['group_stats']['total_forever_hrs']      += user_stats['playtime_forever']
 
 
-# Create a deque for multi-threaded processing
-game_lib_deque = deque([game for game in group_library])
+## Multi-threaded processing of game data
+# Prepare multi-threaded processing
+thread_num = 10
+workers = []
+# raw_game_lib = queue.Queue()
+# for game in group_library:
+#     raw_game_lib.put(game)
+processed_game_lib = []
+error_game_lib = []
+group_library_num = len(group_library)
 
 # Multi-threaded processing of game data
 for w_id in range(thread_num):
-    t = threading.Thread(target=worker, args=(w_id, game_lib_deque, processed_game_lib, len(group_library)))
+    t = threading.Thread(target=worker, args=(w_id, group_library, processed_game_lib, error_game_lib, group_library_num))
+    t.daemon = True  # Daemonize thread
     t.start()
     workers.append(t)
     
 # Wait for all threads to finish
 for t in workers:
-    t.join(timeout=60)
+    t.join(timeout=30 * 60)
+    if t.is_alive():
+        print_log("Thread timed out. Exiting...")
+        break
+    else:
+        print_log(f"Thread {t} finished.")
 
-# Processed game library
-raw_wt_interest = list(processed_game_lib.queue)
-        
-### Sort by Scores
-wt_interest_ranking = []
+print_log("All threads finished.")
+print_log(f"Processed {len(processed_game_lib)} games.")
+print_log(f"Error games: {len(error_game_lib)} games.")
+print_log(f"Processed game library: {processed_game_lib}.")
 
+## Sort by Interest Score
 # Binary Search Tree Sort
-wt_interest_ranking = tree.tree_sort(raw_wt_interest)
+wt_interest_ranking = []
+wt_interest_ranking = tree.tree_sort(processed_game_lib)
+print_log(f"Game Interest Ranking: {len(wt_interest_ranking)} games")
 
-for idx, game in enumerate(wt_interest_ranking): print(f"Game[{idx}]:\n    appid = {game['game']['appid']}\n    interest_score = {game['score']}\n\n")
+# Show 10 most interesting games
+print_log("Top 10 most interesting games:")
+for idx, game in enumerate(wt_interest_ranking[:10]):
+    print(f"---------------------------------------------------------------------------------------\n")
+    print(f"Game[{idx}]:\n    appid = {game['game']['appid']}\n    interest_score = {game['score']}\n\n")
+
 
 # Dump ranking data
 rankings = {
