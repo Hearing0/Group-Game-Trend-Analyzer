@@ -12,6 +12,8 @@ from datetime import datetime
 import time
 import traceback
 import queue
+import numpy as np
+from math import log
 
 
 # Flags
@@ -95,7 +97,6 @@ def fetch_full_game_data(appid):
         # print(f"Error fetching game data for appid {appid}: {e}")
         return e
     return None
-
 
 def process_group_stats(game_stats, game_data):
     # Special: Don't record games of only one person
@@ -231,9 +232,20 @@ def worker(id: int, app_remaining_q: list, results: list, defunct_game_lib: list
             continue
 
     print(f"worker {id} exiting")
+    
 
 
+### Main Program
 
+# Load API key and initial steam id
+api_key = ''
+initial_steam_id = ''
+with open('main_user_credentials.json', 'r') as file:
+    credentials = json.load(file)['user']
+    api_key = credentials['api_key']
+    initial_steam_id = credentials['initial_steam_id']
+    
+    
 # Fetch whitelisted friends and full game data
 with open(whitelist_file_path, 'r') as file:
     whitelisted_friends = json.load(file)['whitelisted friends']
@@ -242,10 +254,11 @@ group_library = []
 group_users = []
 raw_wt_interest = []
 
-    
+                
 # Retrieve all user game data
 for friend in whitelisted_friends:
     game_stats_by_user.append(fetch_user_game_data(friend, api_key))
+    
 
 try:
     # Check for prior progress
@@ -257,9 +270,9 @@ try:
             # Skip fully processed users
             if len(group_library) != 0:
                 if group_library['users'] != 0:
-                    last_user_processed = len(group_library['users']) - 1
-                    del game_stats_by_user[:last_user_processed]                    
-                    
+                    last_processed = len(group_library['users']) - 1
+                    del game_stats_by_user[:last_processed]       
+                    log(f"Continuing from {last_processed} users")
     
     user_num = len(game_stats_by_user)
     
@@ -353,12 +366,27 @@ for idx, game_stats in enumerate(group_library):
 # Prepare multi-threaded processing
 thread_num = 10
 workers = []
-# raw_game_lib = queue.Queue()
-# for game in group_library:
-#     raw_game_lib.put(game)
 processed_game_lib = []
 error_game_lib = []
 group_library_num = len(group_library)
+
+prior_ranking = []
+wt_interest_ranking = []
+
+# Check for prior progress
+if os.path.isfile(game_rankings_file_path) and not PROCESS_FULL:
+    with open(game_rankings_file_path, 'r') as f:
+        prior_ranking = json.load(f)['game_rankings']['wt_interest_ranking']
+    
+        # Skip to last processed games
+        if prior_ranking != None:
+            # Remove processed games from group_library
+            last_game_processed = prior_ranking[-1]['game']['appid']
+            for game in group_library:
+                if game['appid'] == last_game_processed:
+                    group_library = group_library[group_library.index(game):]
+                    break
+            log(f"Continuing from {last_processed}/{group_library_num} games")
 
 # Multi-threaded processing of game data
 for w_id in range(thread_num):
@@ -383,7 +411,6 @@ print_log(f"Processed game library: {processed_game_lib}.")
 
 ## Sort by Interest Score
 # Binary Search Tree Sort
-wt_interest_ranking = []
 wt_interest_ranking = tree.tree_sort(processed_game_lib)
 print_log(f"Game Interest Ranking: {len(wt_interest_ranking)} games")
 
