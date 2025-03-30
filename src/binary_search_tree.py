@@ -22,13 +22,18 @@ def inorder_traversal(root, res):
         res.append(root.game)
         if root.right: inorder_traversal(root.right, res)
 
-def tree_sort(arr):
+def tree_sort(arr, key='score'):
+    """
+    Sorts a list of dictionaries using a binary search tree (BST) based on the specified key.
+    
+    Default key is 'score' which uses a basic weighted avg.
+    """
     if not arr:
         return arr
     
     root = None
     for e in arr:
-        root = insert(root, e['score'], e)
+        root = insert(root, e[key], e)
     
     print("Tree sorted!")
     
