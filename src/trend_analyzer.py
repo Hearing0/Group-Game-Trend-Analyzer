@@ -253,10 +253,11 @@ def append_cluster_ranking(game):
     median_hrs = np.median(playtimes)
     adaptive_stdev = calc_adaptive_stdev(median_hrs)
     
-    # Find clusters: Users within median ± adaptive_stdev
+    # Find clusters: Users within median - adaptive_stdev
     cluster_size = 0
     for i in range(len(playtimes)):
-        if np.abs(playtimes[i] - median_hrs) <= adaptive_stdev: cluster_size += 1
+        # if playtime = 100hrs, median_hr = 100, stdev = 50hrs, cluster_size = 3
+        if playtimes[i] - median_hrs >= -adaptive_stdev: cluster_size += 1
     
     # Cluster bonus (if users form a cohesive group)
     if cluster_size >= 3:
